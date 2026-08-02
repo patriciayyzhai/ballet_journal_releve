@@ -13,15 +13,53 @@ function readLocal<T>(key: string, fallback: T): T {
   }
 }
 
+function writeLocalEntries(entries: JournalEntry[]) {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(ENTRIES_KEY, JSON.stringify(entries));
+  }
+}
+
+export function getLocalEntries() {
+  return readLocal<JournalEntry[]>(ENTRIES_KEY, []);
+}
+
+export async function migrateLocalEntries(): Promise<number> {
+  const supabase = createClient();
+  if (!supabase) return 0;
+
+  const { data: auth, error: authError } = await supabase.auth.getUser();
+  if (authError || !auth.user) return 0;
+
+  const localEntries = getLocalEntries();
+  if (!localEntries.length) return 0;
+
+  const rows = localEntries.map((entry) => ({
+    ...entry,
+    user_id: auth.user!.id,
+  }));
+
+  const { error } = await supabase
+    .from('journal_entries')
+    .upsert(rows, { onConflict: 'id', ignoreDuplicates: true });
+
+  if (error) throw error;
+  writeLocalEntries([]);
+  return rows.length;
+}
+
 export async function getEntries(): Promise<JournalEntry[]> {
   const supabase = createClient();
-  if (!supabase) return readLocal<JournalEntry[]>(ENTRIES_KEY, []);
+  if (!supabase) return getLocalEntries();
+
   const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) return readLocal<JournalEntry[]>(ENTRIES_KEY, []);
+  if (!auth.user) return getLocalEntries();
+
   const { data, error } = await supabase
     .from('journal_entries')
     .select('*')
-    .order('class_date', { ascending: false });
+    .order('class_date', { ascending: false })
+    .order('created_at', { ascending: false });
+
   if (error) throw error;
   return (data || []) as JournalEntry[];
 }
@@ -29,16 +67,16 @@ export async function getEntries(): Promise<JournalEntry[]> {
 export async function addEntry(entry: JournalEntry): Promise<void> {
   const supabase = createClient();
   if (!supabase) {
-    const current = readLocal<JournalEntry[]>(ENTRIES_KEY, []);
-    localStorage.setItem(ENTRIES_KEY, JSON.stringify([entry, ...current]));
+    writeLocalEntries([entry, ...getLocalEntries()]);
     return;
   }
+
   const { data: auth } = await supabase.auth.getUser();
   if (!auth.user) {
-    const current = readLocal<JournalEntry[]>(ENTRIES_KEY, []);
-    localStorage.setItem(ENTRIES_KEY, JSON.stringify([entry, ...current]));
+    writeLocalEntries([entry, ...getLocalEntries()]);
     return;
   }
+
   const { error } = await supabase.from('journal_entries').insert({
     ...entry,
     user_id: auth.user.id,
