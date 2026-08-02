@@ -16,6 +16,10 @@ create table if not exists public.journal_entries (
 
 alter table public.journal_entries enable row level security;
 
+grant usage on schema public to authenticated;
+grant select, insert, update, delete on table public.journal_entries to authenticated;
+revoke all on table public.journal_entries from anon;
+
 create policy "Users can read their own entries"
 on public.journal_entries for select
 using (auth.uid() = user_id);
