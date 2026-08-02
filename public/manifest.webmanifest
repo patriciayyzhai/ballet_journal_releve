@@ -1,0 +1,9 @@
+{
+  "name": "Relevé — Ballet Journal",
+  "short_name": "Relevé",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbfaf7",
+  "theme_color": "#fbfaf7",
+  "description": "A private journal for the things your body learns in ballet."
+}
