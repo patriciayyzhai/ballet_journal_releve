@@ -1,7 +1,8 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { addEntry, getEntries, getFocus, saveFocus } from '@/lib/storage';
+import { addEntry, getEntries, getFocus, migrateLocalEntries, saveFocus } from '@/lib/storage';
+import { createClient, hasSupabaseConfig } from '@/lib/supabase';
 import type { JournalEntry } from '@/lib/types';
 
 const defaultFocus = [
@@ -31,12 +32,47 @@ export default function Home() {
   const [focus, setFocus] = useState(defaultFocus);
   const [entryOpen, setEntryOpen] = useState(false);
   const [focusOpen, setFocusOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [toast, setToast] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [userEmail, setUserEmail] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
 
   useEffect(() => {
     setFocus(getFocus(defaultFocus));
-    getEntries().then(setEntries).catch(() => setEntries([]));
+
+    const refreshEntries = async () => {
+      try {
+        const migrated = await migrateLocalEntries();
+        const nextEntries = await getEntries();
+        setEntries(nextEntries);
+        if (migrated) showToast(`${migrated} local ${migrated === 1 ? 'entry' : 'entries'} moved to the cloud.`);
+      } catch {
+        setEntries([]);
+        showToast('Could not load your journal just now.');
+      }
+    };
+
+    const supabase = createClient();
+    if (supabase) {
+      supabase.auth.getSession().then(({ data }) => {
+        setUserEmail(data.session?.user.email || '');
+        refreshEntries();
+      });
+
+      const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+        setUserEmail(session?.user.email || '');
+        window.setTimeout(refreshEntries, 0);
+      });
+
+      return () => listener.subscription.unsubscribe();
+    }
+
+    refreshEntries();
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
     const onVisible = () => document.visibilityState === 'visible' && setNow(new Date());
     document.addEventListener('visibilitychange', onVisible);
@@ -50,7 +86,7 @@ export default function Home() {
 
   function showToast(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(''), 1800);
+    window.setTimeout(() => setToast(''), 2200);
   }
 
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
@@ -72,17 +108,52 @@ export default function Home() {
       showToast('Add one small reflection first.');
       return;
     }
-    await addEntry(entry);
-    setEntries((current) => [entry, ...current]);
-    if (entry.next_practice) {
-      const next = [entry.next_practice, ...focus.filter((item) => item !== entry.next_practice)].slice(0, 3);
-      setFocus(next);
-      saveFocus(next);
+
+    try {
+      await addEntry(entry);
+      setEntries((current) => [entry, ...current]);
+      if (entry.next_practice) {
+        const next = [entry.next_practice, ...focus.filter((item) => item !== entry.next_practice)].slice(0, 3);
+        setFocus(next);
+        saveFocus(next);
+      }
+      setSelectedTags([]);
+      setEntryOpen(false);
+      event.currentTarget.reset();
+      showToast(userEmail ? 'Saved to your private journal.' : 'Saved on this device.');
+    } catch {
+      showToast('This class could not be saved. Please try again.');
     }
-    setSelectedTags([]);
-    setEntryOpen(false);
-    event.currentTarget.reset();
-    showToast('Another step remembered.');
+  }
+
+  async function sendMagicLink(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const supabase = createClient();
+    if (!supabase) {
+      setAuthMessage('Supabase is not configured yet.');
+      return;
+    }
+
+    const email = String(new FormData(event.currentTarget).get('email') || '').trim();
+    if (!email) return;
+
+    setAuthBusy(true);
+    setAuthMessage('');
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setAuthBusy(false);
+    setAuthMessage(error ? error.message : 'Check your inbox for a private sign-in link.');
+  }
+
+  async function signOut() {
+    const supabase = createClient();
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setAccountOpen(false);
+    setEntries(await getEntries());
+    showToast('Signed out. Local notes remain on this device.');
   }
 
   return (
@@ -90,7 +161,9 @@ export default function Home() {
       <main className="app">
         <header className="topbar">
           <div className="brand"><div className="mark">🦢</div><div><div className="eyebrow">Ballet journal</div><h1>Relevé</h1></div></div>
-          <div className="moon" aria-hidden>◐</div>
+          <button className={`accountPill ${userEmail ? 'signedIn' : ''}`} onClick={() => setAccountOpen(true)} aria-label="Open account">
+            {userEmail ? 'Cloud' : 'Sign in'}
+          </button>
         </header>
 
         <section className="hero">
@@ -120,7 +193,7 @@ export default function Home() {
         </section>
       </main>
 
-      <nav className="nav"><button className="active"><span>⌂</span>Journal</button><button onClick={() => setFocusOpen(true)}><span>◌</span>Practice</button><button onClick={() => showToast('Private by design.') }><span>♙</span>Me</button></nav>
+      <nav className="nav"><button className="active"><span>⌂</span>Journal</button><button onClick={() => setFocusOpen(true)}><span>◌</span>Practice</button><button onClick={() => setAccountOpen(true)}><span>♙</span>Me</button></nav>
 
       {entryOpen && <div className="sheet" onMouseDown={(event) => event.target === event.currentTarget && setEntryOpen(false)}><form className="panel" onSubmit={submitEntry}>
         <div className="grab"/><div className="panelHead"><div><div className="eyebrow">New class note</div><h2>Today’s reflection</h2></div><button className="close" type="button" onClick={() => setEntryOpen(false)}>×</button></div>
@@ -139,6 +212,24 @@ export default function Home() {
         {[0,1,2].map((index) => <div key={index}><label>Focus {index + 1}</label><input className="field" name="focus" defaultValue={focus[index] || ''}/></div>)}
         <div className="saveRow"><button className="secondary" type="button" onClick={() => setFocusOpen(false)}>Cancel</button><button className="save" type="submit">Save intentions</button></div>
       </form></div>}
+
+      {accountOpen && <div className="sheet" onMouseDown={(event) => event.target === event.currentTarget && setAccountOpen(false)}><div className="panel accountPanel">
+        <div className="grab"/><div className="panelHead"><div><div className="eyebrow">Private journal</div><h2>{userEmail ? 'Cloud connected' : 'Carry Relevé with you'}</h2></div><button className="close" type="button" onClick={() => setAccountOpen(false)}>×</button></div>
+        {userEmail ? <>
+          <p className="accountCopy">Signed in as <strong>{userEmail}</strong>. New entries are saved to your private Supabase journal and available across devices.</p>
+          <button className="secondary fullButton" type="button" onClick={signOut}>Sign out</button>
+        </> : <>
+          <p className="accountCopy">Sign in by email to back up your entries and sync them across your phone and laptop. Existing notes on this device will migrate once.</p>
+          {!hasSupabaseConfig() && <div className="authNote">Cloud connection is not configured.</div>}
+          <form onSubmit={sendMagicLink}>
+            <label>Email address</label>
+            <input className="field" name="email" type="email" autoComplete="email" placeholder="you@example.com" required />
+            <button className="save fullButton" type="submit" disabled={authBusy || !hasSupabaseConfig()}>{authBusy ? 'Sending…' : 'Email me a sign-in link'}</button>
+          </form>
+          {authMessage && <div className="authNote">{authMessage}</div>}
+        </>}
+      </div></div>}
+
       {toast && <div className="toast">{toast}</div>}
     </>
   );
