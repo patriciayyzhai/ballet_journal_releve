@@ -45,7 +45,7 @@ export default function Home() {
     const refreshCloudState = async (announceMigration = false) => {
       try {
         const migratedEntries = await migrateLocalEntries();
-        await migrateLocalFocus(defaultFocus);
+        await migrateLocalFocus();
         const [nextEntries, nextFocus] = await Promise.all([
           getEntries(),
           getFocus(defaultFocus),
