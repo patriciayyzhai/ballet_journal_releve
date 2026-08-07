@@ -1,7 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
-import { addEntry, getEntries, getFocus, migrateLocalEntries, saveFocus } from '@/lib/storage';
+import { addEntry, getEntries, getFocus, migrateLocalEntries, migrateLocalFocus, saveFocus } from '@/lib/storage';
 import { createClient, hasSupabaseConfig } from '@/lib/supabase';
 import type { JournalEntry } from '@/lib/types';
 
@@ -40,46 +40,72 @@ export default function Home() {
   const [authMessage, setAuthMessage] = useState('');
 
   useEffect(() => {
-    setFocus(getFocus(defaultFocus));
+    let disposed = false;
 
-    const refreshEntries = async () => {
+    const refreshCloudState = async (announceMigration = false) => {
       try {
-        const migrated = await migrateLocalEntries();
-        const nextEntries = await getEntries();
+        const migratedEntries = await migrateLocalEntries();
+        await migrateLocalFocus(defaultFocus);
+        const [nextEntries, nextFocus] = await Promise.all([
+          getEntries(),
+          getFocus(defaultFocus),
+        ]);
+        if (disposed) return;
         setEntries(nextEntries);
-        if (migrated) showToast(`${migrated} local ${migrated === 1 ? 'entry' : 'entries'} moved to the cloud.`);
+        setFocus(nextFocus);
+        if (announceMigration && migratedEntries) {
+          showToast(`${migratedEntries} local ${migratedEntries === 1 ? 'entry' : 'entries'} moved to the cloud.`);
+        }
       } catch {
-        setEntries([]);
-        showToast('Could not load your journal just now.');
+        if (!disposed) showToast('Could not refresh your journal just now.');
       }
     };
 
     const supabase = createClient();
+    let unsubscribeAuth: (() => void) | undefined;
+
     if (supabase) {
       supabase.auth.getSession().then(({ data }) => {
+        if (disposed) return;
         setUserEmail(data.session?.user.email || '');
-        refreshEntries();
+        refreshCloudState(true);
       });
 
       const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+        if (disposed) return;
         setUserEmail(session?.user.email || '');
-        window.setTimeout(refreshEntries, 0);
+        window.setTimeout(() => refreshCloudState(true), 0);
       });
-
-      return () => listener.subscription.unsubscribe();
+      unsubscribeAuth = () => listener.subscription.unsubscribe();
+    } else {
+      refreshCloudState();
     }
 
-    refreshEntries();
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        setNow(new Date());
+        refreshCloudState();
+      }
+    };
+    const refreshOnFocus = () => refreshCloudState();
+    const refreshOnPageShow = () => refreshCloudState();
+
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    window.addEventListener('focus', refreshOnFocus);
+    window.addEventListener('pageshow', refreshOnPageShow);
+
+    return () => {
+      disposed = true;
+      unsubscribeAuth?.();
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+      window.removeEventListener('focus', refreshOnFocus);
+      window.removeEventListener('pageshow', refreshOnPageShow);
+    };
   }, []);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
-    const onVisible = () => document.visibilityState === 'visible' && setNow(new Date());
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
+    return () => window.clearInterval(timer);
   }, []);
 
   const greeting = useMemo(() => greetingFor(now), [now]);
@@ -115,7 +141,7 @@ export default function Home() {
       if (entry.next_practice) {
         const next = [entry.next_practice, ...focus.filter((item) => item !== entry.next_practice)].slice(0, 3);
         setFocus(next);
-        saveFocus(next);
+        await saveFocus(next);
       }
       setSelectedTags([]);
       setEntryOpen(false);
@@ -153,6 +179,7 @@ export default function Home() {
     await supabase.auth.signOut();
     setAccountOpen(false);
     setEntries(await getEntries());
+    setFocus(await getFocus(defaultFocus));
     showToast('Signed out. Local notes remain on this device.');
   }
 
@@ -207,7 +234,19 @@ export default function Home() {
         <div className="saveRow"><button className="secondary" type="button" onClick={() => setEntryOpen(false)}>Cancel</button><button className="save" type="submit">Remember this class</button></div>
       </form></div>}
 
-      {focusOpen && <div className="sheet"><form className="panel" onSubmit={(event) => {event.preventDefault(); const values = new FormData(event.currentTarget).getAll('focus').map(String).map((x) => x.trim()).filter(Boolean).slice(0, 3); const next = values.length ? values : defaultFocus; setFocus(next); saveFocus(next); setFocusOpen(false); showToast('Practice intentions updated.');}}>
+      {focusOpen && <div className="sheet"><form className="panel" onSubmit={async (event) => {
+        event.preventDefault();
+        const values = new FormData(event.currentTarget).getAll('focus').map(String).map((x) => x.trim()).filter(Boolean).slice(0, 3);
+        const next = values.length ? values : defaultFocus;
+        try {
+          await saveFocus(next);
+          setFocus(next);
+          setFocusOpen(false);
+          showToast(userEmail ? 'Practice intentions synced.' : 'Practice intentions saved on this device.');
+        } catch {
+          showToast('Practice intentions could not be saved.');
+        }
+      }}>
         <div className="grab"/><div className="panelHead"><div><div className="eyebrow">Practice</div><h2>Your three intentions</h2></div><button className="close" type="button" onClick={() => setFocusOpen(false)}>×</button></div>
         {[0,1,2].map((index) => <div key={index}><label>Focus {index + 1}</label><input className="field" name="focus" defaultValue={focus[index] || ''}/></div>)}
         <div className="saveRow"><button className="secondary" type="button" onClick={() => setFocusOpen(false)}>Cancel</button><button className="save" type="submit">Save intentions</button></div>
@@ -216,10 +255,10 @@ export default function Home() {
       {accountOpen && <div className="sheet" onMouseDown={(event) => event.target === event.currentTarget && setAccountOpen(false)}><div className="panel accountPanel">
         <div className="grab"/><div className="panelHead"><div><div className="eyebrow">Private journal</div><h2>{userEmail ? 'Cloud connected' : 'Carry Relevé with you'}</h2></div><button className="close" type="button" onClick={() => setAccountOpen(false)}>×</button></div>
         {userEmail ? <>
-          <p className="accountCopy">Signed in as <strong>{userEmail}</strong>. New entries are saved to your private Supabase journal and available across devices.</p>
+          <p className="accountCopy">Signed in as <strong>{userEmail}</strong>. Journal entries and practice intentions are saved to your private Supabase journal and available across devices.</p>
           <button className="secondary fullButton" type="button" onClick={signOut}>Sign out</button>
         </> : <>
-          <p className="accountCopy">Sign in by email to back up your entries and sync them across your phone and laptop. Existing notes on this device will migrate once.</p>
+          <p className="accountCopy">Sign in by email to back up your entries and practice intentions and sync them across your phone and laptop.</p>
           {!hasSupabaseConfig() && <div className="authNote">Cloud connection is not configured.</div>}
           <form onSubmit={sendMagicLink}>
             <label>Email address</label>
