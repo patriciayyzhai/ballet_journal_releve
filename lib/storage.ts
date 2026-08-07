@@ -19,6 +19,12 @@ function writeLocalEntries(entries: JournalEntry[]) {
   }
 }
 
+function writeLocalFocus(items: string[]) {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(FOCUS_KEY, JSON.stringify(items));
+  }
+}
+
 export function getLocalEntries() {
   return readLocal<JournalEntry[]>(ENTRIES_KEY, []);
 }
@@ -84,10 +90,75 @@ export async function addEntry(entry: JournalEntry): Promise<void> {
   if (error) throw error;
 }
 
-export function getFocus(defaults: string[]) {
-  return readLocal<string[]>(FOCUS_KEY, defaults);
+export async function migrateLocalFocus(defaults: string[]): Promise<number> {
+  const supabase = createClient();
+  if (!supabase) return 0;
+
+  const { data: auth, error: authError } = await supabase.auth.getUser();
+  if (authError || !auth.user) return 0;
+
+  const { data: existing, error: existingError } = await supabase
+    .from('practice_focus')
+    .select('items')
+    .eq('user_id', auth.user.id)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  if (existing) {
+    writeLocalFocus(existing.items || defaults);
+    return 0;
+  }
+
+  const local = readLocal<string[]>(FOCUS_KEY, defaults).filter(Boolean).slice(0, 3);
+  const items = local.length ? local : defaults;
+  const { error } = await supabase.from('practice_focus').insert({
+    user_id: auth.user.id,
+    items,
+  });
+  if (error) throw error;
+  writeLocalFocus(items);
+  return 1;
 }
 
-export function saveFocus(items: string[]) {
-  localStorage.setItem(FOCUS_KEY, JSON.stringify(items));
+export async function getFocus(defaults: string[]): Promise<string[]> {
+  const local = readLocal<string[]>(FOCUS_KEY, defaults);
+  const supabase = createClient();
+  if (!supabase) return local;
+
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return local;
+
+  const { data, error } = await supabase
+    .from('practice_focus')
+    .select('items')
+    .eq('user_id', auth.user.id)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) return local;
+
+  const items = (data.items || defaults) as string[];
+  writeLocalFocus(items);
+  return items;
+}
+
+export async function saveFocus(items: string[]): Promise<void> {
+  const next = items.filter(Boolean).slice(0, 3);
+  writeLocalFocus(next);
+
+  const supabase = createClient();
+  if (!supabase) return;
+
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth.user) return;
+
+  const { error } = await supabase.from('practice_focus').upsert(
+    {
+      user_id: auth.user.id,
+      items: next,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'user_id' },
+  );
+  if (error) throw error;
 }
