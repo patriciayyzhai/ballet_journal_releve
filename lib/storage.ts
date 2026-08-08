@@ -10,39 +10,16 @@ function readLocal<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
-  } catch {
-    return fallback;
-  }
+  } catch { return fallback; }
 }
-
-function hasLocal(key: string) {
-  return typeof window !== 'undefined' && localStorage.getItem(key) !== null;
-}
-
-function writeLocal<T>(key: string, value: T) {
-  if (typeof window !== 'undefined') localStorage.setItem(key, JSON.stringify(value));
-}
-
-function writeLocalEntries(entries: JournalEntry[]) {
-  writeLocal(ENTRIES_KEY, entries);
-}
-
-function writePendingEntries(entries: JournalEntry[]) {
-  writeLocal(PENDING_KEY, entries);
-}
-
-function writeLocalFocus(items: string[]) {
-  writeLocal(FOCUS_KEY, items);
-}
-
-export function getLocalEntries() {
-  return readLocal<JournalEntry[]>(ENTRIES_KEY, []);
-}
-
-export function getPendingEntries() {
-  return readLocal<JournalEntry[]>(PENDING_KEY, []);
-}
-
+function hasLocal(key: string) { return typeof window !== 'undefined' && localStorage.getItem(key) !== null; }
+function writeLocal<T>(key: string, value: T) { if (typeof window !== 'undefined') localStorage.setItem(key, JSON.stringify(value)); }
+function writeLocalEntries(entries: JournalEntry[]) { writeLocal(ENTRIES_KEY, entries); }
+function writePendingEntries(entries: JournalEntry[]) { writeLocal(PENDING_KEY, entries); }
+function writeLocalFocus(items: string[]) { writeLocal(FOCUS_KEY, items); }
+export function getLocalEntries() { return readLocal<JournalEntry[]>(ENTRIES_KEY, []); }
+export function getPendingEntries() { return readLocal<JournalEntry[]>(PENDING_KEY, []); }
+function localJournal() { return [...getPendingEntries(), ...getLocalEntries()]; }
 function queueEntry(entry: JournalEntry) {
   const current = getPendingEntries();
   if (!current.some((item) => item.id === entry.id)) writePendingEntries([entry, ...current]);
@@ -82,12 +59,10 @@ export async function migrateLocalEntries(): Promise<number> {
 
 export async function getEntries(): Promise<JournalEntry[]> {
   const supabase = createClient();
-  if (!supabase) return [...getPendingEntries(), ...getLocalEntries()];
-  const { data, error } = await supabase
-    .from('journal_entries')
-    .select('*')
-    .order('class_date', { ascending: false })
-    .order('created_at', { ascending: false });
+  if (!supabase) return localJournal();
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session) return localJournal();
+  const { data, error } = await supabase.from('journal_entries').select('*').order('class_date', { ascending: false }).order('created_at', { ascending: false });
   if (error) throw error;
   const pending = getPendingEntries();
   const cloud = (data || []) as JournalEntry[];
@@ -96,25 +71,13 @@ export async function getEntries(): Promise<JournalEntry[]> {
 
 export async function addEntry(entry: JournalEntry): Promise<'cloud' | 'local' | 'queued'> {
   const supabase = createClient();
-  if (!supabase) {
-    writeLocalEntries([entry, ...getLocalEntries()]);
-    return 'local';
-  }
+  if (!supabase) { writeLocalEntries([entry, ...getLocalEntries()]); return 'local'; }
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session) {
-    writeLocalEntries([entry, ...getLocalEntries()]);
-    return 'local';
-  }
-  if (typeof navigator !== 'undefined' && !navigator.onLine) {
-    queueEntry(entry);
-    return 'queued';
-  }
+  if (!sessionData.session) { writeLocalEntries([entry, ...getLocalEntries()]); return 'local'; }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) { queueEntry(entry); return 'queued'; }
   const { error } = await supabase.from('journal_entries').insert({ ...entry, user_id: sessionData.session.user.id });
   if (error) {
-    if (!navigator.onLine || error.message.toLowerCase().includes('fetch')) {
-      queueEntry(entry);
-      return 'queued';
-    }
+    if (typeof navigator !== 'undefined' && (!navigator.onLine || error.message.toLowerCase().includes('fetch'))) { queueEntry(entry); return 'queued'; }
     throw error;
   }
   return 'cloud';
@@ -122,41 +85,18 @@ export async function addEntry(entry: JournalEntry): Promise<'cloud' | 'local' |
 
 export async function updateEntry(entry: JournalEntry): Promise<void> {
   const supabase = createClient();
-  if (!supabase) {
-    writeLocalEntries(getLocalEntries().map((item) => item.id === entry.id ? entry : item));
-    return;
-  }
+  if (!supabase) { writeLocalEntries(getLocalEntries().map((item) => item.id === entry.id ? entry : item)); return; }
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session) {
-    writeLocalEntries(getLocalEntries().map((item) => item.id === entry.id ? entry : item));
-    return;
-  }
-  const { error } = await supabase.from('journal_entries').update({
-    class_date: entry.class_date,
-    feeling: entry.feeling,
-    clicked: entry.clicked,
-    correction: entry.correction,
-    next_practice: entry.next_practice,
-    memory: entry.memory,
-    tags: entry.tags,
-    updated_at: new Date().toISOString(),
-  }).eq('id', entry.id);
+  if (!sessionData.session) { writeLocalEntries(getLocalEntries().map((item) => item.id === entry.id ? entry : item)); return; }
+  const { error } = await supabase.from('journal_entries').update({ class_date: entry.class_date, feeling: entry.feeling, clicked: entry.clicked, correction: entry.correction, next_practice: entry.next_practice, memory: entry.memory, tags: entry.tags, updated_at: new Date().toISOString() }).eq('id', entry.id);
   if (error) throw error;
 }
 
 export async function deleteEntry(id: string): Promise<void> {
   const supabase = createClient();
-  if (!supabase) {
-    writeLocalEntries(getLocalEntries().filter((item) => item.id !== id));
-    writePendingEntries(getPendingEntries().filter((item) => item.id !== id));
-    return;
-  }
+  if (!supabase) { writeLocalEntries(getLocalEntries().filter((item) => item.id !== id)); writePendingEntries(getPendingEntries().filter((item) => item.id !== id)); return; }
   const { data: sessionData } = await supabase.auth.getSession();
-  if (!sessionData.session) {
-    writeLocalEntries(getLocalEntries().filter((item) => item.id !== id));
-    writePendingEntries(getPendingEntries().filter((item) => item.id !== id));
-    return;
-  }
+  if (!sessionData.session) { writeLocalEntries(getLocalEntries().filter((item) => item.id !== id)); writePendingEntries(getPendingEntries().filter((item) => item.id !== id)); return; }
   const { error } = await supabase.from('journal_entries').delete().eq('id', id);
   if (error) throw error;
   writePendingEntries(getPendingEntries().filter((item) => item.id !== id));
@@ -181,9 +121,9 @@ export async function getFocus(defaults: string[]): Promise<string[]> {
   const local = readLocal<string[]>(FOCUS_KEY, defaults);
   const supabase = createClient();
   if (!supabase) return local;
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) return local;
-  const { data, error } = await supabase.from('practice_focus').select('items').eq('user_id', auth.user.id).maybeSingle();
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session) return local;
+  const { data, error } = await supabase.from('practice_focus').select('items').eq('user_id', sessionData.session.user.id).maybeSingle();
   if (error) throw error;
   if (!data) return local;
   const items = (data.items || []) as string[];
@@ -196,8 +136,8 @@ export async function saveFocus(items: string[]): Promise<void> {
   writeLocalFocus(next);
   const supabase = createClient();
   if (!supabase) return;
-  const { data: auth } = await supabase.auth.getUser();
-  if (!auth.user) return;
-  const { error } = await supabase.from('practice_focus').upsert({ user_id: auth.user.id, items: next, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session) return;
+  const { error } = await supabase.from('practice_focus').upsert({ user_id: sessionData.session.user.id, items: next, updated_at: new Date().toISOString() }, { onConflict: 'user_id' });
   if (error) throw error;
 }
