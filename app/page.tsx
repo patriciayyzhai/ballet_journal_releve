@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import WeeklyReflection from '@/components/WeeklyReflection';
 import { addEntry, getEntries, getFocus, migrateLocalEntries, migrateLocalFocus, saveFocus } from '@/lib/storage';
 import { createClient, hasSupabaseConfig } from '@/lib/supabase';
 import type { JournalEntry } from '@/lib/types';
@@ -43,21 +44,30 @@ export default function Home() {
     let disposed = false;
 
     const refreshCloudState = async (announceMigration = false) => {
+      let migratedEntries = 0;
       try {
-        const migratedEntries = await migrateLocalEntries();
-        await migrateLocalFocus();
-        const [nextEntries, nextFocus] = await Promise.all([
-          getEntries(),
-          getFocus(defaultFocus),
-        ]);
-        if (disposed) return;
-        setEntries(nextEntries);
-        setFocus(nextFocus);
-        if (announceMigration && migratedEntries) {
-          showToast(`${migratedEntries} local ${migratedEntries === 1 ? 'entry' : 'entries'} moved to the cloud.`);
-        }
+        migratedEntries = await migrateLocalEntries();
       } catch {
-        if (!disposed) showToast('Could not refresh your journal just now.');
+        // Migration failure must never block reading existing cloud entries.
+      }
+
+      try {
+        const nextEntries = await getEntries();
+        if (!disposed) setEntries(nextEntries);
+      } catch {
+        if (!disposed) showToast('Could not load your class notes just now.');
+      }
+
+      try {
+        await migrateLocalFocus();
+        const nextFocus = await getFocus(defaultFocus);
+        if (!disposed) setFocus(nextFocus);
+      } catch {
+        // Practice sync is secondary; keep the current UI state if it fails.
+      }
+
+      if (!disposed && announceMigration && migratedEntries) {
+        showToast(`${migratedEntries} local ${migratedEntries === 1 ? 'entry' : 'entries'} moved to the cloud.`);
       }
     };
 
@@ -141,7 +151,7 @@ export default function Home() {
       if (entry.next_practice) {
         const next = [entry.next_practice, ...focus.filter((item) => item !== entry.next_practice)].slice(0, 3);
         setFocus(next);
-        await saveFocus(next);
+        try { await saveFocus(next); } catch {}
       }
       setSelectedTags([]);
       setEntryOpen(false);
@@ -217,6 +227,10 @@ export default function Home() {
               </article>
             ))}
           </div>
+        </section>
+
+        <section className="section weeklySection">
+          <WeeklyReflection />
         </section>
       </main>
 
