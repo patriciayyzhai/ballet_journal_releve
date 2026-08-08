@@ -48,14 +48,13 @@ export async function getEntries(): Promise<JournalEntry[]> {
   const supabase = createClient();
   if (!supabase) return getLocalEntries();
 
-  const { data: auth, error: authError } = await supabase.auth.getUser();
-  if (authError) throw authError;
-  if (!auth.user) throw new Error('Not signed in to Relevé cloud.');
-
+  // Do not gate the journal read behind a separate getUser() network call.
+  // Supabase attaches the current session automatically, and RLS enforces ownership.
+  // This guarantees a real journal_entries REST request and avoids transient auth checks
+  // preventing otherwise valid cloud reads.
   const { data, error } = await supabase
     .from('journal_entries')
     .select('*')
-    .eq('user_id', auth.user.id)
     .order('class_date', { ascending: false })
     .order('created_at', { ascending: false });
 
