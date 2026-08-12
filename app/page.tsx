@@ -38,6 +38,8 @@ export default function Home() {
   const [cloudStatus, setCloudStatus] = useState<CloudStatus>('checking');
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
   const refreshTimer = useRef<number | null>(null);
 
   function showToast(message: string) {
@@ -168,18 +170,41 @@ export default function Home() {
     catch { showToast('Could not delete this class note.'); }
   }
 
-  async function sendMagicLink(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const supabase = createClient();
+  async function requestEmailCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const supabase = createClient();
     if (!supabase) { setAuthMessage('Supabase is not configured yet.'); return; }
-    const email = String(new FormData(event.currentTarget).get('email') || '').trim(); if (!email) return;
+    const email = String(new FormData(event.currentTarget).get('email') || '').trim();
+    if (!email) return;
     setAuthBusy(true); setAuthMessage('');
-    const { error } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.origin } });
-    setAuthBusy(false); setAuthMessage(error ? error.message : 'Check your inbox for a private sign-in link.');
+    const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
+    setAuthBusy(false);
+    if (error) { setAuthMessage(error.message); return; }
+    setAuthEmail(email);
+    setCodeSent(true);
+    setAuthMessage('Enter the one-time code from your email here, in this Relevé window.');
+  }
+
+  async function verifyEmailCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const supabase = createClient();
+    if (!supabase) return;
+    const token = String(new FormData(event.currentTarget).get('token') || '').replace(/\s/g, '');
+    if (!authEmail || !token) return;
+    setAuthBusy(true); setAuthMessage('');
+    const { error } = await supabase.auth.verifyOtp({ email: authEmail, token, type: 'email' });
+    setAuthBusy(false);
+    if (error) { setAuthMessage(error.message); return; }
+    setCodeSent(false);
+    setAuthMessage('');
+    setCloudStatus('checking');
+    showToast('Signed in. Syncing your journal…');
   }
 
   async function signOut() {
     const supabase = createClient(); if (!supabase) return;
     await supabase.auth.signOut(); setAccountOpen(false); setUserEmail(''); setCloudStatus('signedOut');
+    setCodeSent(false); setAuthEmail(''); setAuthMessage('');
     setEntries(await getEntries()); setFocus(await getFocus(defaultFocus)); showToast('Signed out.');
   }
 
@@ -213,7 +238,7 @@ export default function Home() {
     {focusOpen && <div className="sheet"><form className="panel" onSubmit={async(e)=>{e.preventDefault();const values=new FormData(e.currentTarget).getAll('focus').map(String).map((x)=>x.trim()).filter(Boolean).slice(0,3);const next=values.length?values:defaultFocus;try{await saveFocus(next);setFocus(next);setFocusOpen(false);showToast(cloudStatus==='cloud'?'Practice intentions synced.':'Practice intentions saved on this device.');}catch{showToast('Practice intentions could not be saved.');}}}><div className="grab"/><div className="panelHead"><div><div className="eyebrow">Practice</div><h2>Your three intentions</h2></div><button className="close" type="button" onClick={()=>setFocusOpen(false)}>×</button></div>{[0,1,2].map((i)=><div key={i}><label>Focus {i+1}</label><input className="field" name="focus" defaultValue={focus[i]||''}/></div>)}<div className="saveRow"><button className="secondary" type="button" onClick={()=>setFocusOpen(false)}>Cancel</button><button className="save" type="submit">Save intentions</button></div></form></div>}
 
     {accountOpen && <div className="sheet"><div className="panel"><div className="grab"/><div className="panelHead"><div><div className="eyebrow">Private journal</div><h2>{cloudStatus==='cloud'?'Cloud connected':cloudStatus==='issue'?'Sync needs attention':'Carry Relevé with you'}</h2></div><button className="close" type="button" onClick={()=>setAccountOpen(false)}>×</button></div>
-      {cloudStatus==='cloud'?<><p className="accountCopy">Signed in as <strong>{userEmail}</strong>. Your journal is synced across authenticated Relevé sessions.</p><button className="secondary fullButton" onClick={signOut}>Sign out</button></>:<><p className="accountCopy">{cloudStatus==='issue'?'Your saved session could not be validated. Re-authenticating will restore cloud sync.':'Sign in by email to back up your entries and sync them across your phone and browser.'}</p>{!hasSupabaseConfig()&&<div className="authNote">Cloud connection is not configured.</div>}<form onSubmit={sendMagicLink}><label>Email address</label><input className="field" name="email" type="email" required/><button className="save fullButton" disabled={authBusy||!hasSupabaseConfig()}>{authBusy?'Sending…':'Email me a sign-in link'}</button></form>{authMessage&&<div className="authNote">{authMessage}</div>}</>}
+      {cloudStatus==='cloud'?<><p className="accountCopy">Signed in as <strong>{userEmail}</strong>. Your journal is synced across authenticated Relevé sessions.</p><button className="secondary fullButton" onClick={signOut}>Sign out</button></>:<><p className="accountCopy">{cloudStatus==='issue'?'Your saved session could not be validated. Sign in again to restore cloud sync.':'Sign in here so this exact Relevé app can back up local notes and sync them across your phone and browser.'}</p>{!hasSupabaseConfig()&&<div className="authNote">Cloud connection is not configured.</div>}{!codeSent?<form onSubmit={requestEmailCode}><label>Email address</label><input className="field" name="email" type="email" autoComplete="email" required/><button className="save fullButton" disabled={authBusy||!hasSupabaseConfig()}>{authBusy?'Sending…':'Email me a one-time code'}</button></form>:<><form onSubmit={verifyEmailCode}><label>One-time code</label><input className="field" name="token" inputMode="numeric" autoComplete="one-time-code" placeholder="Enter the code from your email" required/><button className="save fullButton" disabled={authBusy}>{authBusy?'Signing in…':'Sign in to Relevé'}</button></form><button className="textButton fullButton" type="button" onClick={()=>{setCodeSent(false);setAuthMessage('');}}>Use a different email</button></>}{authMessage&&<div className="authNote">{authMessage}</div>}</>}
     </div></div>}
     {toast&&<div className="toast">{toast}</div>}
   </>;
