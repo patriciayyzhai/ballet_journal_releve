@@ -38,7 +38,9 @@ export default function Home() {
   const [cloudStatus, setCloudStatus] = useState<CloudStatus>('checking');
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
+  const [entrySaving, setEntrySaving] = useState(false);
   const refreshTimer = useRef<number | null>(null);
+  const entrySavingRef = useRef(false);
 
   function showToast(message: string) {
     setToast(message);
@@ -129,6 +131,7 @@ export default function Home() {
 
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (entrySavingRef.current) return;
     const data = new FormData(event.currentTarget);
     const entry: JournalEntry = {
       id: crypto.randomUUID(), class_date: String(data.get('class_date')),
@@ -138,6 +141,8 @@ export default function Home() {
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     if (!entry.feeling && !entry.clicked && !entry.correction && !entry.memory) { showToast('Add one small reflection first.'); return; }
+    entrySavingRef.current = true;
+    setEntrySaving(true);
     try {
       const destination = await addEntry(entry);
       setEntries((current) => [entry, ...current]);
@@ -148,6 +153,10 @@ export default function Home() {
       setSelectedTags([]); setEntryOpen(false); event.currentTarget.reset();
       showToast(destination === 'cloud' ? 'Saved to your private journal.' : destination === 'queued' ? 'Saved offline. Relevé will sync it when you reconnect.' : 'Saved on this device.');
     } catch { showToast('This class could not be saved. Please try again.'); }
+    finally {
+      entrySavingRef.current = false;
+      setEntrySaving(false);
+    }
   }
 
   async function submitEdit(event: FormEvent<HTMLFormElement>) {
@@ -208,8 +217,8 @@ export default function Home() {
     </main>
     <nav className="nav"><button className="active"><span>⌂</span>Journal</button><button onClick={() => setFocusOpen(true)}><span>◌</span>Practice</button><button onClick={() => setAccountOpen(true)}><span>♙</span>Me</button></nav>
 
-    {entryOpen && <div className="sheet"><form className="panel" onSubmit={submitEntry}><div className="grab"/><div className="panelHead"><div><div className="eyebrow">New class note</div><h2>Today’s reflection</h2></div><button className="close" type="button" onClick={() => setEntryOpen(false)}>×</button></div>
-      <label>Date</label><input className="field" name="class_date" type="date" defaultValue={localDateValue()} required/><label>How did class feel?</label><textarea className="field" name="feeling"/><label>What clicked?</label><textarea className="field" name="clicked"/><label>Teacher’s correction</label><textarea className="field" name="correction"/><label>Needs work</label><div className="tags">{tagOptions.map((tag)=><button type="button" key={tag} className={`tag ${selectedTags.includes(tag)?'selected':''}`} onClick={()=>setSelectedTags((c)=>c.includes(tag)?c.filter((x)=>x!==tag):[...c,tag])}>{tag}</button>)}</div><label>Next practice</label><input className="field" name="next_practice"/><label>What will you remember?</label><input className="field" name="memory"/><div className="saveRow"><button className="secondary" type="button" onClick={()=>setEntryOpen(false)}>Cancel</button><button className="save" type="submit">Remember this class</button></div>
+    {entryOpen && <div className="sheet"><form className="panel" onSubmit={submitEntry} aria-busy={entrySaving}><div className="grab"/><div className="panelHead"><div><div className="eyebrow">New class note</div><h2>Today’s reflection</h2></div><button className="close" type="button" onClick={() => setEntryOpen(false)} disabled={entrySaving}>×</button></div>
+      <label>Date</label><input className="field" name="class_date" type="date" defaultValue={localDateValue()} required/><label>How did class feel?</label><textarea className="field" name="feeling"/><label>What clicked?</label><textarea className="field" name="clicked"/><label>Teacher’s correction</label><textarea className="field" name="correction"/><label>Needs work</label><div className="tags">{tagOptions.map((tag)=><button type="button" key={tag} className={`tag ${selectedTags.includes(tag)?'selected':''}`} onClick={()=>setSelectedTags((c)=>c.includes(tag)?c.filter((x)=>x!==tag):[...c,tag])}>{tag}</button>)}</div><label>Next practice</label><input className="field" name="next_practice"/><label>What will you remember?</label><input className="field" name="memory"/><div className="saveRow"><button className="secondary" type="button" onClick={()=>setEntryOpen(false)} disabled={entrySaving}>Cancel</button><button className="save" type="submit" disabled={entrySaving}>{entrySaving ? 'Remembering…' : 'Remember this class'}</button></div>
     </form></div>}
 
     {editingEntry && <div className="sheet"><form className="panel" onSubmit={submitEdit}><div className="grab"/><div className="panelHead"><div><div className="eyebrow">Class note</div><h2>Edit reflection</h2></div><button className="close" type="button" onClick={()=>setEditingEntry(null)}>×</button></div>
