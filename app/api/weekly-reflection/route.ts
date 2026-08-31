@@ -20,6 +20,18 @@ function mondayOf(date: Date) {
   return copy.toISOString().slice(0, 10);
 }
 
+function extractResponseText(response: any): string {
+  if (typeof response?.output_text === 'string' && response.output_text.trim()) return response.output_text;
+  const parts = Array.isArray(response?.output) ? response.output : [];
+  for (const item of parts) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      if (typeof part?.text === 'string' && part.text.trim()) return part.text;
+    }
+  }
+  return '';
+}
+
 export async function POST(request: NextRequest) {
   try {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -62,7 +74,8 @@ export async function POST(request: NextRequest) {
     });
     if (!entriesResponse.ok) {
       const detail = await entriesResponse.text();
-      return NextResponse.json({ error: detail || 'Could not read this week’s journal.' }, { status: 500 });
+      console.error('Weekly reflection journal read error', entriesResponse.status, detail);
+      return NextResponse.json({ error: 'Could not read this week’s journal.' }, { status: 500 });
     }
     const allEntries = (await entriesResponse.json()) as Entry[];
     const entries = allEntries.filter((entry) => entry.class_date < weekEnd);
@@ -100,11 +113,24 @@ export async function POST(request: NextRequest) {
     });
     if (!aiResponse.ok) {
       const detail = await aiResponse.text();
-      console.error('OpenAI weekly reflection error', detail);
+      console.error('OpenAI weekly reflection error', aiResponse.status, detail);
       return NextResponse.json({ error: 'The reflection could not be written just now.' }, { status: 502 });
     }
+
     const ai = await aiResponse.json();
-    const reflection = JSON.parse(ai.output_text);
+    const outputText = extractResponseText(ai);
+    if (!outputText) {
+      console.error('OpenAI weekly reflection returned no text', JSON.stringify(ai));
+      return NextResponse.json({ error: 'The reflection came back empty. Please try once more.' }, { status: 502 });
+    }
+
+    let reflection: { title: string; opening: string; observation: string; carry_forward: string };
+    try {
+      reflection = JSON.parse(outputText);
+    } catch {
+      console.error('Weekly reflection JSON parse error', outputText);
+      return NextResponse.json({ error: 'The reflection arrived in an unexpected format. Please try again.' }, { status: 502 });
+    }
 
     const saveResponse = await fetch(`${supabaseUrl}/rest/v1/weekly_reflections?on_conflict=user_id,week_start`, {
       method: 'POST',
@@ -118,12 +144,13 @@ export async function POST(request: NextRequest) {
     });
     if (!saveResponse.ok) {
       const detail = await saveResponse.text();
-      return NextResponse.json({ error: detail || 'The reflection was written but could not be saved.' }, { status: 500 });
+      console.error('Weekly reflection save error', saveResponse.status, detail);
+      return NextResponse.json({ error: 'The reflection was written but could not be saved.' }, { status: 500 });
     }
     const saved = await saveResponse.json();
     return NextResponse.json({ reflection: saved[0] || { week_start: weekStart, ...reflection } });
   } catch (error) {
-    console.error(error);
+    console.error('Weekly reflection unexpected error', error);
     return NextResponse.json({ error: 'Something interrupted the reflection.' }, { status: 500 });
   }
 }
