@@ -5,6 +5,7 @@ import WeeklyReflection from '@/components/WeeklyReflection';
 import { addEntry, deleteEntry, flushPendingEntries, getEntries, getFocus, migrateLocalEntries, migrateLocalFocus, saveFocus, updateEntry } from '@/lib/storage';
 import { createClient, hasSupabaseConfig } from '@/lib/supabase';
 import type { JournalEntry } from '@/lib/types';
+import { vocabulary, type VocabStatus, type VocabTerm } from '@/lib/vocabulary';
 
 const defaultFocus = ['Lift through the supporting side', 'Finish every fifth', 'Relax the shoulders in adagio'];
 const tagOptions = ['Turnout', 'Posture', 'Feet', 'Arms', 'Balance', 'Musicality', 'Jumps', 'Memory'];
@@ -39,6 +40,12 @@ export default function Home() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [entrySaving, setEntrySaving] = useState(false);
+  const [view, setView] = useState<'journal' | 'vocab'>('journal');
+  const [vocabQuery, setVocabQuery] = useState('');
+  const [vocabSection, setVocabSection] = useState('All');
+  const [freeOnly, setFreeOnly] = useState(false);
+  const [vocabStatus, setVocabStatus] = useState<Record<string, VocabStatus>>({});
+  const [selectedTerm, setSelectedTerm] = useState<VocabTerm | null>(null);
   const refreshTimer = useRef<number | null>(null);
   const entrySavingRef = useRef(false);
 
@@ -123,11 +130,24 @@ export default function Home() {
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    try { setVocabStatus(JSON.parse(localStorage.getItem('releve-vocab-status') || '{}')); } catch {}
     return () => window.clearInterval(timer);
   }, []);
 
   const greeting = useMemo(() => greetingFor(now), [now]);
   const cloudLabel = cloudStatus === 'cloud' ? 'Cloud' : cloudStatus === 'issue' ? 'Sync issue' : cloudStatus === 'checking' ? 'Checking…' : 'Sign in';
+  const filteredVocab = useMemo(() => vocabulary.filter((term) => {
+    const query = vocabQuery.trim().toLowerCase();
+    return (vocabSection === 'All' || term.section === vocabSection)
+      && (!freeOnly || Boolean(term.free))
+      && (!query || `${term.name} ${term.family} ${term.detail}`.toLowerCase().includes(query));
+  }), [vocabQuery, vocabSection, freeOnly]);
+
+  function changeVocabStatus(id: string, value: VocabStatus) {
+    const next = { ...vocabStatus, [id]: value };
+    setVocabStatus(next);
+    localStorage.setItem('releve-vocab-status', JSON.stringify(next));
+  }
 
   async function submitEntry(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -204,6 +224,7 @@ export default function Home() {
         <div className="brand"><div className="mark">🦢</div><div><div className="eyebrow">Ballet journal</div><h1>Relevé</h1></div></div>
         <button className={`accountPill ${cloudStatus === 'cloud' ? 'signedIn' : cloudStatus === 'issue' ? 'syncIssue' : ''}`} onClick={() => setAccountOpen(true)}>{cloudLabel}</button>
       </header>
+      {view === 'journal' ? <>
       <section className="hero"><div className="eyebrow">{greeting}</div><h2>What did your body discover today?</h2><p>Capture a correction, a breakthrough, or one quiet thing to carry into your next class.</p><button className="primary" onClick={() => setEntryOpen(true)}>Start today’s reflection</button></section>
       <section className="section"><div className="sectionHead"><h3>Current practice</h3><button className="textButton" onClick={() => setFocusOpen(true)}>Edit</button></div><div className="focusList">{focus.map((item) => <div className="focusCard" key={item}><div className="dot"/><span>{item}</span></div>)}</div></section>
       <section className="section"><div className="sectionHead"><h3>Recent entries</h3><span className="muted">{entries.length || ''}</span></div><div className="entryList">
@@ -214,8 +235,9 @@ export default function Home() {
         </button>)}
       </div></section>
       <section className="section weeklySection"><WeeklyReflection /></section>
+      </> : <Workbook query={vocabQuery} setQuery={setVocabQuery} section={vocabSection} setSection={setVocabSection} freeOnly={freeOnly} setFreeOnly={setFreeOnly} terms={filteredVocab} status={vocabStatus} onSelect={setSelectedTerm}/>}
     </main>
-    <nav className="nav"><button className="active"><span>⌂</span>Journal</button><button onClick={() => setFocusOpen(true)}><span>◌</span>Practice</button><button onClick={() => setAccountOpen(true)}><span>♙</span>Me</button></nav>
+    <nav className="nav"><button className={view === 'journal' ? 'active' : ''} onClick={() => setView('journal')}><span>⌂</span>Journal</button><button onClick={() => { setView('journal'); setFocusOpen(true); }}><span>◌</span>Practice</button><button className={view === 'vocab' ? 'active' : ''} onClick={() => setView('vocab')}><span>⌕</span>Vocab</button><button onClick={() => setAccountOpen(true)}><span>♙</span>Me</button></nav>
 
     {entryOpen && <div className="sheet"><form className="panel" onSubmit={submitEntry} aria-busy={entrySaving}><div className="grab"/><div className="panelHead"><div><div className="eyebrow">New class note</div><h2>Today’s reflection</h2></div><button className="close" type="button" onClick={() => setEntryOpen(false)} disabled={entrySaving}>×</button></div>
       <label>Date</label><input className="field" name="class_date" type="date" defaultValue={localDateValue()} required/><label>How did class feel?</label><textarea className="field" name="feeling"/><label>What clicked?</label><textarea className="field" name="clicked"/><label>Teacher’s correction</label><textarea className="field" name="correction"/><label>Needs work</label><div className="tags">{tagOptions.map((tag)=><button type="button" key={tag} className={`tag ${selectedTags.includes(tag)?'selected':''}`} onClick={()=>setSelectedTags((c)=>c.includes(tag)?c.filter((x)=>x!==tag):[...c,tag])}>{tag}</button>)}</div><label>Next practice</label><input className="field" name="next_practice"/><label>What will you remember?</label><input className="field" name="memory"/><div className="saveRow"><button className="secondary" type="button" onClick={()=>setEntryOpen(false)} disabled={entrySaving}>Cancel</button><button className="save" type="submit" disabled={entrySaving}>{entrySaving ? 'Remembering…' : 'Remember this class'}</button></div>
@@ -230,6 +252,12 @@ export default function Home() {
     {accountOpen && <div className="sheet"><div className="panel"><div className="grab"/><div className="panelHead"><div><div className="eyebrow">Private journal</div><h2>{cloudStatus==='cloud'?'Cloud connected':cloudStatus==='issue'?'Sync needs attention':'Carry Relevé with you'}</h2></div><button className="close" type="button" onClick={()=>setAccountOpen(false)}>×</button></div>
       {cloudStatus==='cloud'?<><p className="accountCopy">Signed in as <strong>{userEmail}</strong>. Your journal is synced across authenticated Relevé sessions.</p><button className="secondary fullButton" onClick={signOut}>Sign out</button></>:<><p className="accountCopy">{cloudStatus==='issue'?'Your saved session could not be validated. Sign in again to restore cloud sync.':'Sign in with Google to back up local notes and sync them across your phone and browser.'}</p>{!hasSupabaseConfig()&&<div className="authNote">Cloud connection is not configured.</div>}<button className="save fullButton" type="button" onClick={signInWithGoogle} disabled={authBusy||!hasSupabaseConfig()}>{authBusy?'Opening Google…':'Continue with Google'}</button>{authMessage&&<div className="authNote">{authMessage}</div>}</>}
     </div></div>}
+    {selectedTerm && <div className="sheet" onMouseDown={(event) => event.target === event.currentTarget && setSelectedTerm(null)}><section className="panel termPanel"><div className="grab"/><div className="panelHead"><div><div className="eyebrow">{selectedTerm.family}</div><h2>{selectedTerm.name}</h2></div><button className="close" type="button" onClick={() => setSelectedTerm(null)}>×</button></div><div className="termTags"><span>{selectedTerm.section}</span>{selectedTerm.free && <span>Free enchaînement · {selectedTerm.free}</span>}</div><p className="termDefinition">{selectedTerm.detail}</p><div className="cueCard"><div className="eyebrow">Remember</div><p>{selectedTerm.cue}</p></div><div className="statusBlock"><div className="eyebrow">My progress</div><div className="statusChoices">{(['new','reviewing','learned'] as VocabStatus[]).map((item) => <button key={item} className={(vocabStatus[selectedTerm.id] || 'new') === item ? 'selected' : ''} onClick={() => changeVocabStatus(selectedTerm.id, item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div></div></section></div>}
     {toast&&<div className="toast">{toast}</div>}
   </>;
+}
+
+function Workbook({query,setQuery,section,setSection,freeOnly,setFreeOnly,terms,status,onSelect}:{query:string;setQuery:(value:string)=>void;section:string;setSection:(value:string)=>void;freeOnly:boolean;setFreeOnly:(value:boolean)=>void;terms:VocabTerm[];status:Record<string,VocabStatus>;onSelect:(term:VocabTerm)=>void}) {
+  const learned = Object.values(status).filter((item) => item === 'learned').length;
+  return <section className="vocabPage"><div className="vocabIntro"><div className="eyebrow">RAD Intermediate Foundation</div><h2>Your ballet language,<br/><em>en pointe.</em></h2><p>Build recognition for class and confidence for free enchaînement—one term at a time.</p></div><div className="progressCard"><div><span>{learned}</span><small> of {vocabulary.length} learned</small></div><div className="progressTrack"><i style={{width:`${learned / vocabulary.length * 100}%`}}/></div></div><label className="searchBox"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search a step or family…" aria-label="Search vocabulary"/>{query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search">×</button>}</label><div className="filterScroll">{['All','Barre','Centre','Allegro','Pointe'].map((item) => <button key={item} className={section === item ? 'selected' : ''} onClick={() => setSection(item)}>{item}</button>)}</div><button className={`freeToggle ${freeOnly ? 'selected' : ''}`} onClick={() => setFreeOnly(!freeOnly)}><span>✦</span><div><strong>Free enchaînement set</strong><small>{freeOnly ? 'Showing focal + linking steps' : 'Practise the examiner’s vocabulary'}</small></div><i>{freeOnly ? 'On' : 'Off'}</i></button><div className="vocabResults"><div className="resultHead"><h3>{freeOnly ? 'Free enchaînement' : section === 'All' ? 'All vocabulary' : section}</h3><span>{terms.length} terms</span></div>{!terms.length && <div className="empty">No terms found. Try another spelling or category.</div>}{terms.map((term) => <button className="termCard" key={term.id} onClick={() => onSelect(term)}><div className={`statusDot ${status[term.id] || 'new'}`}>{status[term.id] === 'learned' ? '✓' : ''}</div><div><span className="termFamily">{term.family}</span><strong>{term.name}</strong><small>{term.detail}</small></div><span className="chevron">›</span></button>)}</div><p className="sourceNote">Based on the RAD Intermediate Foundation female syllabus vocabulary supplied by you. Technique cues are concise practice reminders, not official RAD teaching notes.</p></section>;
 }

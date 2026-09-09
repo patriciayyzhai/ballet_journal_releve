@@ -1,4 +1,4 @@
-# Relevé v0.2
+# Relevé v0.3
 
 A mobile-first Swan Lake–themed ballet journal built with Next.js and an optional Supabase backend.
 
@@ -10,6 +10,9 @@ A mobile-first Swan Lake–themed ballet journal built with Next.js and an optio
 - Supabase storage automatically activates after environment variables are configured and the user is authenticated.
 - PWA manifest for adding Relevé to a phone home screen.
 - Row-level-security SQL so each user can only access their own entries.
+- RAD Intermediate Foundation vocabulary workbook with search and syllabus-section filters.
+- Dedicated free-enchaînement focal/linking study set.
+- On-device New, Reviewing, and Learned progress.
 
 ## Run locally
 
